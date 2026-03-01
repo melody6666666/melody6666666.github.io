@@ -1,0 +1,691 @@
+import React, { useState, useMemo } from 'react';
+import { 
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer 
+} from 'recharts';
+import { 
+  LayoutDashboard, BookOpen, Settings, Plus, Trash2, X, Save, MapPin, TrendingUp, Sparkles, Pencil
+} from 'lucide-react';
+
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, onSnapshot, setDoc, deleteDoc, doc } from 'firebase/firestore';
+
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+// --- 背景小怪獸元件 ---
+function BackgroundMonsters() {
+  return (
+    <div className="fixed inset-0 overflow-hidden pointer-events-none -z-10">
+      <style>{`
+        @keyframes float-slow {
+          0%, 100% { transform: translateY(0px) rotate(0deg); }
+          50% { transform: translateY(-20px) rotate(3deg); }
+        }
+        @keyframes float-reverse {
+          0%, 100% { transform: translateY(0px) rotate(0deg); }
+          50% { transform: translateY(20px) rotate(-3deg); }
+        }
+        .animate-float { animation: float-slow 6s ease-in-out infinite; }
+        .animate-float-reverse { animation: float-reverse 8s ease-in-out infinite; }
+        .animate-float-delay { animation: float-slow 7s ease-in-out infinite 3s; }
+      `}</style>
+      
+      {/* 怪獸 1: 史萊姆 */}
+      <div className="absolute top-10 right-[10%] w-32 h-32 text-pink-300/40 animate-float">
+        <svg viewBox="0 0 100 100" fill="currentColor">
+          <path d="M20,80 Q20,30 50,30 Q80,30 80,80 Q65,70 50,85 Q35,70 20,80 Z" />
+          <circle cx="40" cy="55" r="6" fill="#FFFBF0"/>
+          <circle cx="60" cy="55" r="6" fill="#FFFBF0"/>
+          <circle cx="40" cy="55" r="2.5" fill="#78716c"/>
+          <circle cx="60" cy="55" r="2.5" fill="#78716c"/>
+          <path d="M45,70 Q50,75 55,70" stroke="#78716c" strokeWidth="2.5" fill="none" strokeLinecap="round"/>
+        </svg>
+      </div>
+
+      {/* 怪獸 2: 獨眼大角怪 */}
+      <div className="absolute bottom-20 left-[5%] w-40 h-40 text-orange-300/30 animate-float-reverse">
+        <svg viewBox="0 0 100 100" fill="currentColor">
+          <path d="M30,80 L30,45 Q30,25 50,25 Q70,25 70,45 L70,80 Q50,90 30,80 Z" />
+          <path d="M35,30 L25,10 L45,25 Z" />
+          <path d="M65,30 L75,10 L55,25 Z" />
+          <circle cx="50" cy="50" r="14" fill="#FFFBF0"/>
+          <circle cx="50" cy="50" r="6" fill="#78716c"/>
+          <path d="M40,70 Q50,80 60,70" stroke="#78716c" strokeWidth="3" fill="none" strokeLinecap="round"/>
+        </svg>
+      </div>
+
+      {/* 怪獸 3: 飛行圓圓怪 */}
+      <div className="absolute top-1/3 left-[15%] w-24 h-24 text-blue-300/40 animate-float-delay">
+        <svg viewBox="0 0 100 100" fill="currentColor">
+          <circle cx="50" cy="50" r="30" />
+          <path d="M22,50 Q5,35 5,50 Q5,65 22,50 Z" />
+          <path d="M78,50 Q95,35 95,50 Q95,65 78,50 Z" />
+          <circle cx="40" cy="45" r="5" fill="#FFFBF0"/>
+          <circle cx="60" cy="45" r="5" fill="#FFFBF0"/>
+          <circle cx="40" cy="45" r="2" fill="#78716c"/>
+          <circle cx="60" cy="45" r="2" fill="#78716c"/>
+          <path d="M45,55 L48,60 L50,55 L52,60 L55,55" stroke="#FFFBF0" strokeWidth="2" fill="none" strokeLinejoin="round"/>
+        </svg>
+      </div>
+
+      {/* 怪獸 4: 偷看的小怪 */}
+      <div className="absolute -bottom-5 right-[20%] w-28 h-28 text-green-400/30 animate-float">
+        <svg viewBox="0 0 100 100" fill="currentColor">
+          <path d="M20,100 Q20,40 50,40 Q80,40 80,100 Z" />
+          <circle cx="35" cy="70" r="8" fill="#FFFBF0"/>
+          <circle cx="65" cy="70" r="8" fill="#FFFBF0"/>
+          <circle cx="35" cy="70" r="3" fill="#78716c"/>
+          <circle cx="65" cy="70" r="3" fill="#78716c"/>
+        </svg>
+      </div>
+    </div>
+  );
+}
+
+export default function App() {
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [locations, setLocations] = useState([]);
+  const [subjects, setSubjects] = useState([]);
+  const [records, setRecords] = useState([]);
+  
+  const [user, setUser] = useState(null);
+  const [isDbReady, setIsDbReady] = useState(false);
+  const [isRecordModalOpen, setIsRecordModalOpen] = useState(false);
+
+  // 用於新增紀錄的表單狀態
+  const [recordForm, setRecordForm] = useState({
+    locationId: '',
+    subjectId: '',
+    paperName: '',
+    attempt: 1,
+    score: '',
+    date: new Date().toISOString().split('T')[0]
+  });
+
+  // 1. 處理 Firebase 登入
+  React.useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (error) {
+        console.error("Auth error:", error);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, setUser);
+    return () => unsubscribe();
+  }, []);
+
+  // 2. 監聽 Firebase 資料
+  React.useEffect(() => {
+    if (!user) return;
+
+    const locationsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'locations');
+    const subjectsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'subjects');
+    const recordsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'records');
+
+    const unsubLocations = onSnapshot(locationsRef, (snapshot) => {
+      setLocations(snapshot.docs.map(doc => doc.data()));
+    }, console.error);
+
+    const unsubSubjects = onSnapshot(subjectsRef, (snapshot) => {
+      setSubjects(snapshot.docs.map(doc => doc.data()));
+    }, console.error);
+
+    const unsubRecords = onSnapshot(recordsRef, (snapshot) => {
+      setRecords(snapshot.docs.map(doc => doc.data()));
+    }, console.error);
+
+    setIsDbReady(true);
+
+    return () => {
+      unsubLocations();
+      unsubSubjects();
+      unsubRecords();
+    };
+  }, [user]);
+
+  // 處理表單變更
+  const handleRecordFormChange = (e) => {
+    const { name, value } = e.target;
+    setRecordForm(prev => {
+      const updated = { ...prev, [name]: value };
+      if (name === 'locationId') updated.subjectId = '';
+      return updated;
+    });
+  };
+
+  // 儲存紀錄
+  const handleSaveRecord = async () => {
+    if (!recordForm.locationId || !recordForm.subjectId || !recordForm.paperName || !recordForm.score) {
+      alert('請填寫完整資訊唷！ 🥺');
+      return;
+    }
+    if (!user) return;
+    
+    const newRecord = {
+      id: `rec${Date.now()}`,
+      ...recordForm,
+      attempt: parseInt(recordForm.attempt, 10),
+      score: parseFloat(recordForm.score)
+    };
+    
+    await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'records', newRecord.id), newRecord);
+    
+    setIsRecordModalOpen(false);
+    setRecordForm({
+      locationId: recordForm.locationId, 
+      subjectId: recordForm.subjectId,   
+      paperName: '',                     
+      attempt: 1,
+      score: '',
+      date: new Date().toISOString().split('T')[0]
+    });
+  };
+
+  const deleteRecord = async (id) => {
+    if(window.confirm('確定要刪除這筆紀錄嗎？ 🗑️')) {
+      if (!user) return;
+      await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'records', id));
+    }
+  };
+
+  if (!user || !isDbReady) {
+    return (
+      <div className="min-h-screen bg-[#FFFBF0] flex items-center justify-center font-sans text-stone-700">
+        <div className="text-2xl font-black text-[#FFB067] flex flex-col items-center gap-4">
+          <div className="text-6xl animate-bounce">👾</div>
+          正在連接魔法資料庫...
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-[#FFFBF0] flex flex-col md:flex-row font-sans text-stone-700 selection:bg-orange-200 relative z-0">
+      <BackgroundMonsters />
+      {/* 可愛風側邊導覽列 (桌面版為懸浮卡片) */}
+      <aside className="w-full md:w-72 bg-white/80 backdrop-blur-md md:m-4 md:rounded-[2.5rem] md:border-4 border-b-4 border-orange-100 flex flex-col md:shadow-sm flex-shrink-0 z-10">
+        <div className="p-8 pb-4 text-center md:text-left">
+          <div className="inline-flex items-center justify-center p-3 bg-orange-100 rounded-3xl mb-4 text-orange-500 transform -rotate-6">
+            <Pencil className="w-8 h-8" />
+          </div>
+          <h1 className="text-2xl font-black text-stone-800 tracking-wide">
+            教甄打怪日記
+          </h1>
+          <p className="text-orange-400 font-medium text-sm mt-2 flex items-center justify-center md:justify-start gap-1">
+            <Sparkles className="w-4 h-4" /> 紀錄你的進步軌跡
+          </p>
+        </div>
+        
+        <nav className="flex-1 px-4 py-4 space-y-3">
+          <NavItem active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} icon={<LayoutDashboard />} label="📊 魔法成績單" />
+          <NavItem active={activeTab === 'records'} onClick={() => setActiveTab('records')} icon={<BookOpen />} label="📖 歷史小本本" />
+          <NavItem active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} icon={<Settings />} label="⚙️ 考科設定村" />
+        </nav>
+        
+        <div className="p-6 pt-2">
+          <button 
+            onClick={() => setIsRecordModalOpen(true)}
+            className="w-full bg-[#FFB067] hover:bg-[#FFA047] text-white py-4 rounded-3xl flex items-center justify-center gap-2 font-bold text-lg transition-all shadow-[0_6px_0_#E08E45] hover:shadow-[0_2px_0_#E08E45] hover:translate-y-[4px]"
+          >
+            <Plus className="w-6 h-6 stroke-[3]" /> 記上一筆！
+          </button>
+        </div>
+      </aside>
+
+      {/* 主要內容區 */}
+      <main className="flex-1 p-4 md:p-8 md:pl-4 overflow-y-auto">
+        <div className="max-w-6xl mx-auto">
+          {activeTab === 'dashboard' && <DashboardView locations={locations} subjects={subjects} records={records} />}
+          {activeTab === 'records' && <RecordsView locations={locations} subjects={subjects} records={records} onDelete={deleteRecord} />}
+          {activeTab === 'settings' && <SettingsView locations={locations} subjects={subjects} userId={user.uid} />}
+        </div>
+      </main>
+
+      {/* 新增成績 Modal (可愛風) */}
+      {isRecordModalOpen && (
+        <div className="fixed inset-0 bg-stone-900/40 flex items-center justify-center p-4 z-50 backdrop-blur-sm">
+          <div className="bg-white rounded-[2.5rem] w-full max-w-md shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-300 border-4 border-orange-100">
+            <div className="bg-[#FFB067] px-8 py-6 flex justify-between items-center relative overflow-hidden">
+              {/* 背景小裝飾 */}
+              <div className="absolute top-2 right-12 text-white/20 transform rotate-12">
+                <Sparkles className="w-16 h-16" />
+              </div>
+              
+              <h2 className="text-2xl font-black text-white flex items-center gap-2 relative z-10">
+                ✨ 新增一筆成績
+              </h2>
+              <button onClick={() => setIsRecordModalOpen(false)} className="bg-white/20 hover:bg-white/40 p-2 rounded-full text-white transition-colors relative z-10">
+                <X className="w-6 h-6 stroke-[3]" />
+              </button>
+            </div>
+            
+            <div className="p-8 space-y-5 bg-[#FFFDF8]">
+              <div>
+                <label className="block text-sm font-bold text-stone-600 mb-2">📍 縣市 / 類別</label>
+                <select name="locationId" value={recordForm.locationId} onChange={handleRecordFormChange} className="w-full p-3.5 bg-white border-2 border-orange-100 rounded-2xl focus:ring-0 focus:border-orange-400 transition-all outline-none font-medium text-stone-700 shadow-sm appearance-none">
+                  <option value="">請選擇要打怪的地點...</option>
+                  {locations.map(loc => (
+                    <option key={loc.id} value={loc.id}>{loc.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-bold text-stone-600 mb-2">📚 考試科目</label>
+                <select name="subjectId" value={recordForm.subjectId} onChange={handleRecordFormChange} disabled={!recordForm.locationId} className="w-full p-3.5 bg-white border-2 border-orange-100 rounded-2xl disabled:bg-stone-50 disabled:text-stone-400 focus:ring-0 focus:border-orange-400 transition-all outline-none font-medium text-stone-700 shadow-sm appearance-none">
+                  <option value="">請選擇科目...</option>
+                  {subjects.filter(s => s.locationId === recordForm.locationId).map(sub => (
+                    <option key={sub.id} value={sub.id}>{sub.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-bold text-stone-600 mb-2">🏷️ 考卷年度</label>
+                  <input type="text" name="paperName" value={recordForm.paperName} onChange={handleRecordFormChange} placeholder="如: 112年" className="w-full p-3.5 bg-white border-2 border-orange-100 rounded-2xl focus:ring-0 focus:border-orange-400 transition-all outline-none font-medium text-stone-700 shadow-sm placeholder:text-stone-300" />
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-stone-600 mb-2">🔁 第幾次寫？</label>
+                  <select name="attempt" value={recordForm.attempt} onChange={handleRecordFormChange} className="w-full p-3.5 bg-white border-2 border-orange-100 rounded-2xl focus:ring-0 focus:border-orange-400 transition-all outline-none font-medium text-stone-700 shadow-sm appearance-none text-center">
+                    {[1, 2, 3, 4, 5, 6].map(num => (
+                      <option key={num} value={num}>第 {num} 次</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-bold text-stone-600 mb-2">💯 獲得分數</label>
+                  <input type="number" name="score" value={recordForm.score} onChange={handleRecordFormChange} placeholder="0-100" className="w-full p-3.5 bg-white border-2 border-orange-100 rounded-2xl focus:ring-0 focus:border-orange-400 transition-all outline-none font-medium text-stone-700 shadow-sm placeholder:text-stone-300 font-mono text-lg" />
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-stone-600 mb-2">📅 測驗日期</label>
+                  <input type="date" name="date" value={recordForm.date} onChange={handleRecordFormChange} className="w-full p-3.5 bg-white border-2 border-orange-100 rounded-2xl focus:ring-0 focus:border-orange-400 transition-all outline-none font-medium text-stone-600 shadow-sm" />
+                </div>
+              </div>
+            </div>
+
+            <div className="p-6 bg-orange-50/50 flex justify-end gap-3 border-t-2 border-orange-100">
+              <button onClick={() => setIsRecordModalOpen(false)} className="px-6 py-3 text-stone-500 hover:bg-stone-200/50 rounded-2xl font-bold transition-colors">
+                下次再說
+              </button>
+              <button onClick={handleSaveRecord} className="px-8 py-3 bg-[#FFD166] hover:bg-[#FFC436] text-stone-800 rounded-2xl font-bold flex items-center gap-2 transition-all shadow-[0_4px_0_#E5B74D] hover:shadow-[0_2px_0_#E5B74D] hover:translate-y-[2px]">
+                <Save className="w-5 h-5" /> 收錄成績！
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --- 側邊欄按鈕元件 ---
+function NavItem({ active, onClick, icon, label }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full flex items-center gap-3 px-5 py-4 rounded-3xl transition-all font-bold text-lg ${
+        active 
+          ? 'bg-orange-100/80 text-orange-600 shadow-sm border-2 border-orange-200' 
+          : 'text-stone-500 hover:bg-orange-50 border-2 border-transparent hover:text-orange-500'
+      }`}
+    >
+      {React.cloneElement(icon, { className: `w-6 h-6 ${active ? 'stroke-[2.5]' : 'stroke-2'}` })}
+      {label}
+    </button>
+  );
+}
+
+// --- 視圖: 成績趨勢 (Dashboard) ---
+function DashboardView({ locations, subjects, records }) {
+  const [selectedLoc, setSelectedLoc] = useState(locations[0]?.id || '');
+  
+  const availableSubjects = useMemo(() => subjects.filter(s => s.locationId === selectedLoc), [subjects, selectedLoc]);
+  const [selectedSub, setSelectedSub] = useState('');
+  
+  React.useEffect(() => {
+    if (availableSubjects.length > 0 && !availableSubjects.find(s => s.id === selectedSub)) {
+      setSelectedSub(availableSubjects[0].id);
+    } else if (availableSubjects.length === 0) {
+      setSelectedSub('');
+    }
+  }, [availableSubjects, selectedSub]);
+
+  const chartData = useMemo(() => {
+    if (!selectedLoc || !selectedSub) return [];
+    const filteredRecords = records.filter(r => r.locationId === selectedLoc && r.subjectId === selectedSub);
+    
+    const grouped = {};
+    filteredRecords.forEach(r => {
+      if (!grouped[r.paperName]) {
+        grouped[r.paperName] = { paperName: r.paperName, maxAttempt: 0 };
+      }
+      grouped[r.paperName][`attempt${r.attempt}`] = r.score;
+      if (r.attempt > grouped[r.paperName].maxAttempt) {
+        grouped[r.paperName].maxAttempt = r.attempt;
+      }
+    });
+    
+    return Object.values(grouped).sort((a, b) => a.paperName.localeCompare(b.paperName));
+  }, [records, selectedLoc, selectedSub]);
+
+  const stats = useMemo(() => {
+    if (!selectedLoc || !selectedSub) return { avg: 0, max: 0, count: 0 };
+    const filtered = records.filter(r => r.locationId === selectedLoc && r.subjectId === selectedSub);
+    if (filtered.length === 0) return { avg: 0, max: 0, count: 0 };
+    
+    const max = Math.max(...filtered.map(r => r.score));
+    const avg = (filtered.reduce((sum, r) => sum + r.score, 0) / filtered.length).toFixed(1);
+    return { avg, max, count: filtered.length };
+  }, [records, selectedLoc, selectedSub]);
+
+  return (
+    <div className="space-y-8 animate-in fade-in duration-300">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 bg-white/80 backdrop-blur-md p-6 rounded-[2rem] border-4 border-orange-100 shadow-sm">
+        <div>
+          <h2 className="text-2xl font-black text-stone-800 flex items-center gap-2">
+            <TrendingUp className="text-[#FFB067] stroke-[3]" /> 進步觀測站 🔭
+          </h2>
+          <p className="text-stone-500 mt-1 font-medium text-sm">挑選想看的考科，看看你的超能力有沒有變強！</p>
+        </div>
+        
+        <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
+          <select value={selectedLoc} onChange={e => setSelectedLoc(e.target.value)} className="px-4 py-3 bg-[#FFFBF0] border-2 border-orange-200 rounded-2xl text-stone-700 font-bold focus:ring-0 focus:border-orange-400 outline-none appearance-none min-w-[140px] shadow-sm">
+            {locations.map(loc => <option key={loc.id} value={loc.id}>{loc.name}</option>)}
+          </select>
+          <select value={selectedSub} onChange={e => setSelectedSub(e.target.value)} className="px-4 py-3 bg-[#FFFBF0] border-2 border-orange-200 rounded-2xl text-stone-700 font-bold focus:ring-0 focus:border-orange-400 outline-none appearance-none min-w-[140px] shadow-sm">
+            <option value="">選擇考科...</option>
+            {availableSubjects.map(sub => <option key={sub.id} value={sub.id}>{sub.name}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {chartData.length > 0 ? (
+        <>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+            <StatCard title="努力次數" value={`${stats.count} 次`} icon="💪" color="bg-blue-100" textColor="text-blue-600" />
+            <StatCard title="歷史巔峰" value={`${stats.max} 分`} icon="🏆" color="bg-yellow-100" textColor="text-yellow-600" />
+            <StatCard title="平均水準" value={`${stats.avg} 分`} icon="🌟" color="bg-pink-100" textColor="text-pink-600" />
+          </div>
+
+          <div className="bg-white/80 backdrop-blur-md p-6 sm:p-8 rounded-[2rem] shadow-sm border-4 border-orange-100">
+            <h3 className="text-xl font-black text-stone-700 mb-8 text-center flex items-center justify-center gap-2">
+              📈 歷年試卷刷題曲線
+            </h3>
+            <div className="h-80 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartData} margin={{ top: 10, right: 30, left: -20, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="6 6" vertical={false} stroke="#fef08a" />
+                  <XAxis dataKey="paperName" axisLine={false} tickLine={false} tick={{ fill: '#78716c', fontWeight: 'bold' }} dy={15} />
+                  <YAxis domain={[0, 100]} axisLine={false} tickLine={false} tick={{ fill: '#78716c', fontWeight: 'bold' }} dx={-10} />
+                  <RechartsTooltip 
+                    cursor={{ stroke: '#fef08a', strokeWidth: 2, strokeDasharray: '4 4' }}
+                    contentStyle={{ borderRadius: '20px', border: '3px solid #ffedd5', boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.05)', backgroundColor: 'rgba(255, 255, 255, 0.95)', fontWeight: 'bold', color: '#57534e' }}
+                  />
+                  <Legend wrapperStyle={{ paddingTop: '20px', fontWeight: 'bold' }} iconType="circle" />
+                  {/* 可愛色系的線條 */}
+                  <Line type="monotone" dataKey="attempt1" name="初次挑戰" stroke="#93C5FD" strokeWidth={5} dot={{ r: 6, strokeWidth: 3, fill: '#fff' }} activeDot={{ r: 9 }} connectNulls />
+                  <Line type="monotone" dataKey="attempt2" name="二次復仇" stroke="#FDBA74" strokeWidth={5} dot={{ r: 6, strokeWidth: 3, fill: '#fff' }} activeDot={{ r: 9 }} connectNulls />
+                  <Line type="monotone" dataKey="attempt3" name="三次輾壓" stroke="#F9A8D4" strokeWidth={5} dot={{ r: 6, strokeWidth: 3, fill: '#fff' }} activeDot={{ r: 9 }} connectNulls />
+                  <Line type="monotone" dataKey="attempt4" name="四次封神" stroke="#86EFAC" strokeWidth={5} dot={{ r: 6, strokeWidth: 3, fill: '#fff' }} activeDot={{ r: 9 }} connectNulls />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </>
+      ) : (
+        <div className="bg-white/80 backdrop-blur-md p-12 rounded-[2.5rem] shadow-sm border-4 border-orange-100 text-center flex flex-col items-center justify-center min-h-[400px] relative overflow-hidden group">
+          {/* 背景裝飾大怪獸 */}
+          <div className="absolute -right-8 -bottom-8 w-48 h-48 text-orange-50 group-hover:scale-110 transition-transform duration-500">
+             <svg viewBox="0 0 100 100" fill="currentColor">
+              <path d="M30,80 L30,45 Q30,25 50,25 Q70,25 70,45 L70,80 Q50,90 30,80 Z" />
+              <path d="M35,30 L25,10 L45,25 Z" />
+              <path d="M65,30 L75,10 L55,25 Z" />
+            </svg>
+          </div>
+          <div className="text-6xl mb-4 animate-bounce relative z-10 drop-shadow-md">
+            👾
+          </div>
+          <h3 className="text-2xl font-black text-stone-700 relative z-10">這裡空空的耶！</h3>
+          <p className="text-stone-500 mt-2 max-w-md font-medium relative z-10">這個考科目前還沒有任何怪獸可以打。趕快點擊左邊的「記上一筆！」開始你的打怪之旅吧！</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StatCard({ title, value, icon, color, textColor }) {
+  return (
+    <div className="bg-white/80 backdrop-blur-md p-6 rounded-[2rem] shadow-sm border-4 border-orange-100 flex items-center gap-5 hover:-translate-y-1 transition-transform duration-300">
+      <div className={`p-4 ${color} rounded-[1.5rem] text-3xl flex items-center justify-center`}>
+        {icon}
+      </div>
+      <div>
+        <p className="text-sm font-bold text-stone-400">{title}</p>
+        <p className={`text-3xl font-black ${textColor}`}>{value}</p>
+      </div>
+    </div>
+  );
+}
+
+// --- 視圖: 歷史紀錄 (Records List) ---
+function RecordsView({ locations, subjects, records, onDelete }) {
+  const getLocationName = (id) => locations.find(l => l.id === id)?.name || '❓';
+  const getSubjectName = (id) => subjects.find(s => s.id === id)?.name || '❓';
+
+  return (
+    <div className="space-y-6 animate-in fade-in duration-300">
+      <div className="bg-white/80 backdrop-blur-md p-6 rounded-[2rem] border-4 border-orange-100 shadow-sm">
+        <h2 className="text-2xl font-black text-stone-800 flex items-center gap-2">
+           📖 歷史小本本
+        </h2>
+        <p className="text-stone-500 mt-1 font-medium text-sm">每一筆都是變強的證明！</p>
+      </div>
+
+      <div className="bg-white/80 backdrop-blur-md rounded-[2rem] shadow-sm border-4 border-orange-100 overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse min-w-[600px]">
+            <thead>
+              <tr className="bg-orange-50/80 border-b-4 border-orange-100 text-orange-800 font-bold">
+                <th className="p-5 whitespace-nowrap">📅 日期</th>
+                <th className="p-5 whitespace-nowrap">📍 地點</th>
+                <th className="p-5 whitespace-nowrap">📚 科目</th>
+                <th className="p-5 whitespace-nowrap">🏷️ 卷別</th>
+                <th className="p-5 whitespace-nowrap text-center">🔁 次數</th>
+                <th className="p-5 whitespace-nowrap text-right">💯 分數</th>
+                <th className="p-5 whitespace-nowrap text-center">操作</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y-2 divide-orange-50">
+              {records.length === 0 ? (
+                <tr>
+                  <td colSpan="7" className="p-12 text-center text-stone-400 font-bold text-lg">
+                    裡面還沒有東西喔 🕸️
+                  </td>
+                </tr>
+              ) : (
+                records.sort((a, b) => new Date(b.date) - new Date(a.date)).map(record => (
+                  <tr key={record.id} className="hover:bg-[#FFFBF0] transition-colors group font-medium text-stone-600">
+                    <td className="p-5 text-sm">{record.date}</td>
+                    <td className="p-5 font-bold text-stone-700">{getLocationName(record.locationId)}</td>
+                    <td className="p-5 text-orange-600">{getSubjectName(record.subjectId)}</td>
+                    <td className="p-5">{record.paperName}</td>
+                    <td className="p-5 text-center">
+                      <span className="inline-block px-3 py-1 bg-yellow-100 text-yellow-700 text-sm rounded-xl font-bold border-2 border-yellow-200">
+                        第 {record.attempt} 次
+                      </span>
+                    </td>
+                    <td className="p-5 text-right font-black text-xl text-stone-700">{record.score}</td>
+                    <td className="p-5 text-center">
+                      <button 
+                        onClick={() => onDelete(record.id)}
+                        className="p-2 text-stone-300 hover:text-red-500 hover:bg-red-50 rounded-xl transition-colors md:opacity-0 group-hover:opacity-100"
+                        title="丟掉！"
+                      >
+                        <Trash2 className="w-5 h-5 stroke-[2.5]" />
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// --- 視圖: 考科與縣市設定 (Settings) ---
+function SettingsView({ locations, subjects, userId }) {
+  const [newLocName, setNewLocName] = useState('');
+  const [selectedLocForSub, setSelectedLocForSub] = useState(locations[0]?.id || '');
+  const [newSubName, setNewSubName] = useState('');
+
+  React.useEffect(() => {
+    if (!selectedLocForSub && locations.length > 0) {
+      setSelectedLocForSub(locations[0].id);
+    }
+  }, [locations, selectedLocForSub]);
+
+  const handleAddLocation = async (e) => {
+    e.preventDefault();
+    if (!newLocName.trim() || !userId) return;
+    const newLoc = { id: `loc${Date.now()}`, name: newLocName.trim() };
+    
+    await setDoc(doc(db, 'artifacts', appId, 'users', userId, 'locations', newLoc.id), newLoc);
+    
+    if (!selectedLocForSub) setSelectedLocForSub(newLoc.id);
+    setNewLocName('');
+  };
+
+  const handleAddSubject = async (e) => {
+    e.preventDefault();
+    if (!newSubName.trim() || !selectedLocForSub || !userId) return;
+    const newSub = { id: `sub${Date.now()}`, locationId: selectedLocForSub, name: newSubName.trim() };
+    
+    await setDoc(doc(db, 'artifacts', appId, 'users', userId, 'subjects', newSub.id), newSub);
+    setNewSubName('');
+  };
+
+  const handleDeleteLocation = async (id) => {
+    if(window.confirm('把這個地點刪掉的話，裡面的考科也會跟著消失喔！確定嗎？ 🥺')) {
+      await deleteDoc(doc(db, 'artifacts', appId, 'users', userId, 'locations', id));
+      if (selectedLocForSub === id) setSelectedLocForSub(locations.find(l => l.id !== id)?.id || '');
+    }
+  };
+
+  const handleDeleteSubject = async (id) => {
+    await deleteDoc(doc(db, 'artifacts', appId, 'users', userId, 'subjects', id));
+  };
+
+  return (
+    <div className="space-y-8 animate-in fade-in duration-300">
+      <div className="bg-white/80 backdrop-blur-md p-6 rounded-[2rem] border-4 border-orange-100 shadow-sm">
+        <h2 className="text-2xl font-black text-stone-800 flex items-center gap-2">
+           ⚙️ 考科設定村
+        </h2>
+        <p className="text-stone-500 mt-1 font-medium text-sm">在這裡建立你的專屬考區跟科目吧！</p>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        {/* 縣市設定區 */}
+        <div className="bg-white/80 backdrop-blur-md rounded-[2rem] shadow-sm border-4 border-orange-100 p-6 hover:-translate-y-1 transition-transform">
+          <h3 className="text-xl font-black text-stone-700 flex items-center gap-2 mb-6">
+            <MapPin className="text-[#FFB067] w-6 h-6 stroke-[3]" /> 管理考區
+          </h3>
+          
+          <form onSubmit={handleAddLocation} className="flex gap-2 mb-6">
+            <input 
+              type="text" 
+              value={newLocName} 
+              onChange={e => setNewLocName(e.target.value)} 
+              placeholder="新增戰區 (如: 桃園市)" 
+              className="flex-1 p-3.5 bg-[#FFFBF0] border-2 border-orange-200 rounded-2xl focus:ring-0 focus:border-orange-400 outline-none text-stone-700 font-bold placeholder:text-stone-400"
+            />
+            <button type="submit" className="px-5 py-3.5 bg-green-100 text-green-700 hover:bg-green-200 rounded-2xl font-bold transition-colors whitespace-nowrap flex items-center gap-1 border-2 border-green-200">
+              <Plus className="w-5 h-5 stroke-[3]" /> 加進去
+            </button>
+          </form>
+
+          <ul className="space-y-3">
+            {locations.map(loc => (
+              <li key={loc.id} className="flex justify-between items-center p-4 bg-orange-50/50 rounded-2xl border-2 border-orange-100">
+                <span className="font-bold text-stone-700 text-lg">{loc.name}</span>
+                <button onClick={() => handleDeleteLocation(loc.id)} className="text-stone-300 hover:text-red-500 hover:bg-white rounded-xl p-2 transition-all">
+                  <Trash2 className="w-5 h-5 stroke-[2.5]" />
+                </button>
+              </li>
+            ))}
+            {locations.length === 0 && <p className="text-stone-400 text-sm text-center py-6 font-bold">目前沒有任何考區唷 🌵</p>}
+          </ul>
+        </div>
+
+        {/* 考科設定區 */}
+        <div className="bg-white/80 backdrop-blur-md rounded-[2rem] shadow-sm border-4 border-orange-100 p-6 hover:-translate-y-1 transition-transform">
+          <h3 className="text-xl font-black text-stone-700 flex items-center gap-2 mb-6">
+            <BookOpen className="text-[#FFB067] w-6 h-6 stroke-[3]" /> 管理專屬科目
+          </h3>
+          
+          <div className="mb-5">
+            <label className="block text-sm font-bold text-stone-500 mb-2">先選擇一個考區 👇</label>
+            <select 
+              value={selectedLocForSub} 
+              onChange={e => setSelectedLocForSub(e.target.value)}
+              className="w-full p-3.5 bg-[#FFFBF0] border-2 border-orange-200 rounded-2xl focus:ring-0 focus:border-orange-400 outline-none text-stone-700 font-bold appearance-none"
+            >
+              <option value="">請選擇...</option>
+              {locations.map(loc => <option key={loc.id} value={loc.id}>{loc.name}</option>)}
+            </select>
+          </div>
+
+          <form onSubmit={handleAddSubject} className="flex gap-2 mb-6">
+            <input 
+              type="text" 
+              value={newSubName} 
+              onChange={e => setNewSubName(e.target.value)} 
+              disabled={!selectedLocForSub}
+              placeholder="新增科目 (如: 數學)" 
+              className="flex-1 p-3.5 bg-[#FFFBF0] border-2 border-orange-200 rounded-2xl focus:ring-0 focus:border-orange-400 outline-none disabled:bg-stone-50 disabled:border-stone-200 text-stone-700 font-bold placeholder:text-stone-400"
+            />
+            <button type="submit" disabled={!selectedLocForSub} className="px-5 py-3.5 bg-blue-100 text-blue-700 hover:bg-blue-200 disabled:opacity-50 disabled:hover:bg-blue-100 rounded-2xl font-bold transition-colors whitespace-nowrap flex items-center gap-1 border-2 border-blue-200">
+              <Plus className="w-5 h-5 stroke-[3]" /> 加進去
+            </button>
+          </form>
+
+          <ul className="space-y-3">
+            {selectedLocForSub ? (
+              subjects.filter(s => s.locationId === selectedLocForSub).length > 0 ? (
+                subjects.filter(s => s.locationId === selectedLocForSub).map(sub => (
+                  <li key={sub.id} className="flex justify-between items-center p-4 bg-orange-50/50 rounded-2xl border-2 border-orange-100">
+                    <span className="font-bold text-stone-700 text-lg">{sub.name}</span>
+                    <button onClick={() => handleDeleteSubject(sub.id)} className="text-stone-300 hover:text-red-500 hover:bg-white rounded-xl p-2 transition-all">
+                      <Trash2 className="w-5 h-5 stroke-[2.5]" />
+                    </button>
+                  </li>
+                ))
+              ) : (
+                <p className="text-stone-400 text-sm text-center py-6 font-bold">這個考區還沒有設定科目 ✏️</p>
+              )
+            ) : (
+              <p className="text-stone-300 text-sm text-center py-6 font-bold">請先在上方選擇考區 👆</p>
+            )}
+          </ul>
+        </div>
+      </div>
+    </div>
+  );
+}
